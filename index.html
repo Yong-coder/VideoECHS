@@ -1,0 +1,529 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Video Player</title>
+
+<style>
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    padding: 20px;
+    background: #f4f6f8;
+    color: #222;
+    font-family: Arial, sans-serif;
+}
+
+main {
+    width: min(900px, 100%);
+    margin: auto;
+}
+
+h1 { font-size: 1.5rem; }
+
+.player-shell {
+    position: relative;
+    width: 100%;
+    background: #000;
+    overflow: hidden;
+    border-radius: 8px;
+}
+
+video {
+    display: block;
+    width: 100%;
+    max-height: 75vh;
+    background: #000;
+}
+
+.toolbar {
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 12px;
+    background: #171717;
+}
+
+button, .file-label {
+    padding: 11px 16px;
+    border: 0;
+    border-radius: 6px;
+    background: #1769e0;
+    color: #fff;
+    font: inherit;
+    cursor: pointer;
+}
+
+input[type="url"] {
+    flex: 1 1 260px;
+    min-width: 0;
+    padding: 10px;
+    border: 1px solid #c9cdd3;
+    border-radius: 6px;
+    font: inherit;
+}
+
+.controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 14px;
+}
+
+input[type="file"] { display: none; }
+
+.file-label { display: inline-block; }
+
+.hint {
+    color: #5b6572;
+    font-size: 14px;
+}
+
+/* Full-screen the entire player */
+.player-shell:fullscreen {
+    width: 100%;
+    height: 100%;
+    height: 100dvh;
+    border-radius: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+
+.player-shell:fullscreen video {
+    width: 100%;
+    height: 0;
+    min-height: 0;
+    max-height: none;
+    flex: 1;
+    object-fit: contain;
+}
+
+.player-shell:fullscreen .toolbar {
+    flex-shrink: 0;
+}
+
+/* No visible toolbar while locked */
+.player-shell.locked .toolbar {
+    display: none !important;
+}
+
+/* Invisible overlay blocks video controls and screen taps */
+#lockOverlay {
+    position: absolute;
+    inset: 0;
+    z-index: 100;
+    background: transparent;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+#lockOverlay[hidden] {
+    display: none;
+}
+
+/* Invisible unlock zone in the top-right corner */
+#unlockHotspot {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 90px;
+    height: 90px;
+    padding: 0;
+    opacity: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    cursor: default;
+    touch-action: none;
+}
+
+/* Feedback appears only while the user is holding */
+#holdFeedback {
+    display: none;
+    position: absolute;
+    top: 18%;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 12px 20px;
+    border-radius: 10px;
+    background: rgba(0, 0, 0, 0.85);
+    color: white;
+    font-size: 18px;
+    font-weight: bold;
+    text-align: center;
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+#lockOverlay.holding #holdFeedback {
+    display: block;
+}
+
+#message {
+    color: #a12626;
+    font-size: 14px;
+}
+</style>
+</head>
+
+<body>
+<main>
+    <h1>Video Player</h1>
+
+    <div class="player-shell" id="playerShell">
+
+        <video
+            id="player"
+            loop
+            playsinline
+            preload="metadata">
+        </video>
+
+        <div class="toolbar" id="toolbar">
+            <button type="button" id="startButton">
+                ▶ Play Full Screen &amp; Lock
+            </button>
+            <button type="button" id="lockButton">
+                🔒 Lock Screen
+            </button>
+        </div>
+
+        <div id="lockOverlay" hidden>
+            <div id="holdFeedback" aria-live="polite">
+                Keep holding... 3
+            </div>
+
+            <button
+                type="button"
+                id="unlockHotspot"
+                aria-label="Hold the top-right corner for three seconds to unlock"
+                tabindex="-1">
+            </button>
+        </div>
+
+    </div>
+
+    <div class="controls" id="loadControls">
+        <label class="file-label" for="fileInput">
+            Choose Video
+        </label>
+
+        <input
+            id="fileInput"
+            type="file"
+            accept="video/mp4,video/*">
+
+        <input
+            id="videoUrl"
+            type="url"
+            placeholder="Paste a direct MP4 video URL">
+
+        <button type="button" id="loadUrl">
+            Load URL
+        </button>
+    </div>
+
+    <p class="hint">
+        Start the video using Play Full Screen &amp; Lock.
+        To unlock, hold the top-right corner continuously for 3 seconds.
+    </p>
+
+    <p id="message" role="status" aria-live="polite"></p>
+</main>
+
+<script>
+const player = document.getElementById("player");
+const shell = document.getElementById("playerShell");
+const overlay = document.getElementById("lockOverlay");
+const hotspot = document.getElementById("unlockHotspot");
+const feedback = document.getElementById("holdFeedback");
+const message = document.getElementById("message");
+const startButton = document.getElementById("startButton");
+const lockButton = document.getElementById("lockButton");
+const fileInput = document.getElementById("fileInput");
+const videoUrl = document.getElementById("videoUrl");
+
+let isLocked = false;
+let sessionStarted = false;
+let objectUrl = null;
+let holdTimer = null;
+let countdownTimer = null;
+let holdStart = 0;
+let activePointer = null;
+
+player.loop = true;
+player.controls = false;
+
+/* Load a video from a file or a direct URL. */
+function loadVideo(src, isLocal = false) {
+    if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+        objectUrl = null;
+    }
+
+    if (isLocal) objectUrl = src;
+
+    setLocked(false);
+    sessionStarted = false;
+    player.pause();
+    player.removeAttribute("src");
+    player.src = src;
+    player.load();
+    player.loop = true;
+
+    message.textContent = "Video loaded. Click Play Full Screen & Lock.";
+}
+
+fileInput.addEventListener("change", () => {
+    const file = fileInput.files[0];
+    if (!file) return;
+
+    if (!file.type.startsWith("video/")) {
+        message.textContent = "Please select a video file.";
+        return;
+    }
+
+    videoUrl.value = "";
+    loadVideo(URL.createObjectURL(file), true);
+});
+
+document.getElementById("loadUrl").addEventListener("click", () => {
+    const value = videoUrl.value.trim();
+
+    try {
+        const url = new URL(value);
+
+        if (!["http:", "https:"].includes(url.protocol)) {
+            throw new Error();
+        }
+
+        fileInput.value = "";
+        loadVideo(url.href);
+    } catch {
+        message.textContent =
+            "Enter a valid direct video URL.";
+    }
+});
+
+/* Automatically enter full screen and lock when starting. */
+startButton.addEventListener("click", startPlayback);
+
+async function startPlayback() {
+    if (!player.currentSrc) {
+        message.textContent = "Load a video first.";
+        return;
+    }
+
+    sessionStarted = true;
+    player.loop = true;
+
+    // Request full screen and start playback within the user action.
+    let fullscreenPromise = Promise.resolve();
+
+    if (!document.fullscreenElement) {
+        try {
+            fullscreenPromise = shell.requestFullscreen();
+        } catch (error) {
+            fullscreenPromise = Promise.reject(error);
+        }
+    }
+
+    setLocked(true);
+
+    const playPromise = player.play();
+
+    const [fullscreenResult, playResult] = await Promise.allSettled([
+        fullscreenPromise,
+        playPromise
+    ]);
+
+    if (playResult.status === "rejected") {
+        setLocked(false);
+        sessionStarted = false;
+        message.textContent =
+            "Playback could not start. Check the video source and try again.";
+        return;
+    }
+
+    if (fullscreenResult.status === "rejected") {
+        message.textContent =
+            "Video is locked, but full screen was blocked. Use the browser's full-screen permission or try again.";
+    } else {
+        message.textContent = "";
+    }
+}
+
+/* Lock the screen and remove all visible player controls. */
+function setLocked(value) {
+    cancelHold();
+
+    isLocked = value;
+    shell.classList.toggle("locked", value);
+    overlay.hidden = !value;
+    player.controls = !value;
+
+    lockButton.textContent = value
+        ? "🔒 Screen Locked"
+        : "🔒 Lock Screen";
+
+    if (value) {
+        overlay.classList.remove("holding");
+        feedback.textContent = "Keep holding... 3";
+    }
+}
+
+lockButton.addEventListener("click", () => {
+    setLocked(true);
+});
+
+/* Playing or resuming automatically locks the player. */
+player.addEventListener("play", () => {
+    if (sessionStarted && !isLocked) {
+        setLocked(true);
+    }
+});
+
+/* Hidden corner must be held continuously for three seconds. */
+hotspot.addEventListener("pointerdown", (event) => {
+    if (!isLocked || holdTimer !== null) return;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    activePointer = event.pointerId;
+    holdStart = Date.now();
+
+    overlay.classList.add("holding");
+    feedback.textContent = "Keep holding... 3";
+
+    try {
+        hotspot.setPointerCapture(event.pointerId);
+    } catch (error) {}
+
+    countdownTimer = setInterval(() => {
+        const remaining = Math.max(
+            0,
+            3 - Math.floor((Date.now() - holdStart) / 1000)
+        );
+
+        feedback.textContent =
+            remaining > 0
+                ? "Keep holding... " + remaining
+                : "Unlocking...";
+    }, 100);
+
+    holdTimer = setTimeout(() => {
+        holdTimer = null;
+        if (countdownTimer !== null) {
+            clearInterval(countdownTimer);
+            countdownTimer = null;
+        }
+
+        activePointer = null;
+        setLocked(false);
+        message.textContent = "Screen unlocked.";
+    }, 3000);
+});
+
+function cancelHold(event) {
+    if (
+        event &&
+        activePointer !== null &&
+        event.pointerId !== activePointer
+    ) {
+        return;
+    }
+
+    const wasHolding = holdTimer !== null;
+
+    if (holdTimer !== null) {
+        clearTimeout(holdTimer);
+        holdTimer = null;
+    }
+
+    if (countdownTimer !== null) {
+        clearInterval(countdownTimer);
+        countdownTimer = null;
+    }
+
+    activePointer = null;
+    overlay.classList.remove("holding");
+
+    if (wasHolding && isLocked) {
+        feedback.textContent = "Keep holding... 3";
+    }
+}
+
+hotspot.addEventListener("pointerup", cancelHold);
+hotspot.addEventListener("pointercancel", cancelHold);
+
+hotspot.addEventListener("pointermove", (event) => {
+    if (holdTimer === null || event.pointerId !== activePointer) return;
+
+    const rect = hotspot.getBoundingClientRect();
+
+    if (
+        event.clientX < rect.left ||
+        event.clientX > rect.right ||
+        event.clientY < rect.top ||
+        event.clientY > rect.bottom
+    ) {
+        cancelHold(event);
+    }
+});
+
+hotspot.addEventListener("lostpointercapture", () => {
+    if (holdTimer !== null) cancelHold();
+});
+
+/* Block all other touches, clicks and right-clicks while locked. */
+overlay.addEventListener("pointerdown", (event) => {
+    if (event.target !== hotspot) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+}, true);
+
+overlay.addEventListener("click", (event) => {
+    if (event.target !== hotspot) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+}, true);
+
+overlay.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+});
+
+document.addEventListener("keydown", (event) => {
+    if (!isLocked) return;
+
+    // Permit Escape to leave browser full screen, but not to unlock.
+    if (event.key !== "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+}, true);
+
+player.addEventListener("error", () => {
+    if (player.currentSrc) {
+        message.textContent =
+            "Unable to play this video. Check its link and sharing permissions.";
+    }
+});
+
+window.addEventListener("beforeunload", () => {
+    cancelHold();
+
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+});
+</script>
+</body>
+</html>
